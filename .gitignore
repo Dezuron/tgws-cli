@@ -1,0 +1,12 @@
+# Local build outputs
+build/
+tgws-artifacts/
+dist/
+
+# Upstream checkout used for local builds
+upstream/
+
+# Python environment
+.venv/
+__pycache__/
+*.pyc
