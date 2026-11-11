@@ -1,14 +1,28 @@
 name: Build headless tgws-cli
 
-# Tag format: v<upstream>-<revision>, e.g. v1.11.2-1.
+# Tag format: v<upstream>-<revision>, e.g. v1.11.4-1.
 # The upstream sources are built unmodified; only the console entry point is
 # frozen (no tray icon, no GUI dialogs).
+#
+# Three ways to start a build:
+#   * push a tag `v<upstream>-<revision>` — build exactly that version;
+#   * run the workflow manually with `upstream` — build `v<upstream>-1`;
+#   * the daily schedule — build the newest Flowseal release that has no build
+#     here yet, so this mirror never lags behind upstream.
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      upstream:
+        description: "Upstream tag to build, e.g. v1.11.4 (empty = newest release)"
+        required: false
+        type: string
+  schedule:
+    # 04:17 UTC every day.
+    - cron: "17 4 * * *"
 
 permissions:
   contents: write
@@ -18,8 +32,63 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    name: Resolve the version to build
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      upstream: ${{ steps.meta.outputs.upstream }}
+    steps:
+      - name: Resolve the version
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_UPSTREAM: ${{ inputs.upstream }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT" = "push" ]; then
+            tag="$REF_NAME"
+          else
+            upstream_tag="$INPUT_UPSTREAM"
+            if [ -z "$upstream_tag" ]; then
+              upstream_tag="$(gh api repos/Flowseal/tg-ws-proxy/releases/latest --jq .tag_name)"
+            fi
+            tag="v${upstream_tag#v}-1"
+          fi
+
+          version="${tag#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?$'; then
+            echo "::error::Tag must look like v1.11.4-1, got '$tag'"
+            exit 1
+          fi
+
+          upstream="${version%%-*}"
+
+          # The schedule only fills gaps: an upstream version that already has
+          # a build here is not rebuilt under a new revision.
+          if [ "$EVENT" = "schedule" ]; then
+            existing="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v${upstream}-" --jq 'length' 2>/dev/null || echo 0)"
+            if [ "${existing:-0}" -gt 0 ]; then
+              echo "Upstream v${upstream} already has a build; nothing to do."
+              tag=""
+            fi
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "upstream=$upstream"
+          } >> "$GITHUB_OUTPUT"
+
   build:
     name: Build tgws-cli (Windows 11)
+    needs: resolve
+    if: needs.resolve.outputs.tag != ''
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -27,27 +96,11 @@ jobs:
       - name: Checkout this repository
         uses: actions/checkout@v7
 
-      - name: Read the upstream version from the tag
-        id: meta
-        shell: pwsh
-        run: |
-          $tag = "${{ github.ref_name }}"
-          if ($tag -notmatch '^v(?<version>.+)$') {
-            throw "Tag must look like v1.11.2-1, got '$tag'"
-          }
-          $version = $Matches['version']
-          $upstream = ($version -split '-')[0]
-          if ($upstream -notmatch '^\d+\.\d+\.\d+$') {
-            throw "Cannot derive the upstream tag from '$version'"
-          }
-          Add-Content $env:GITHUB_OUTPUT "version=$version"
-          Add-Content $env:GITHUB_OUTPUT "upstream=$upstream"
-
       - name: Checkout upstream tg-ws-proxy
         uses: actions/checkout@v7
         with:
           repository: Flowseal/tg-ws-proxy
-          ref: v${{ steps.meta.outputs.upstream }}
+          ref: v${{ needs.resolve.outputs.upstream }}
           path: upstream
 
       - name: Setup Python
@@ -103,10 +156,10 @@ jobs:
       - name: Publish the release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.ref_name }}
-          name: tgws-cli ${{ steps.meta.outputs.version }}
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          name: tgws-cli ${{ needs.resolve.outputs.version }}
           body: |
-            Headless CLI build of [Flowseal/tg-ws-proxy@v${{ steps.meta.outputs.upstream }}](https://github.com/Flowseal/tg-ws-proxy/releases/tag/v${{ steps.meta.outputs.upstream }}),
+            Headless CLI build of [Flowseal/tg-ws-proxy@v${{ needs.resolve.outputs.upstream }}](https://github.com/Flowseal/tg-ws-proxy/releases/tag/v${{ needs.resolve.outputs.upstream }}),
             built from the unmodified upstream sources with only the console entry point
             (`proxy.tg_ws_proxy:main`) bundled — no tray icon, no GUI dialogs.
 

@@ -22,6 +22,11 @@ entry point, smoke-tests it (`--help` plus a real port bind) and publishes:
 - `tgws-cli-windows-x64.exe` — console build, no tray icon, no GUI dialogs;
 - `SHA256SUMS.txt`.
 
+A daily schedule keeps the mirror in sync: it looks up the newest
+`Flowseal/tg-ws-proxy` release and, when this repository has no build for that upstream
+version yet, publishes `v<upstream>-1` on its own. A manual run (`workflow_dispatch`) does
+the same for a given `upstream` tag.
+
 `zapret-ui` downloads the binary from this repository's latest release, verifies the GitHub
 SHA-256 `digest` and stores it in `%LOCALAPPDATA%\zapret-ui\tgws\`.
 
